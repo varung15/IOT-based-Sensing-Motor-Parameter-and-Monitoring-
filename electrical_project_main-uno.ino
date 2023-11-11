@@ -1,178 +1,326 @@
-#include<Wire.h>
+#include <math.h>
 #include <LiquidCrystal_I2C.h>
+#include <ZMPT101B.h>
+#include <Wire.h>
+LiquidCrystal_I2C lcd(0x27, 16, 2);
+#define SENSITIVITY 500.0f
+const int thermistor_output = A0;
 
-LiquidCrystal_I2C lcd = LiquidCrystal_I2C(0x27, 16, 2); // Change to (0x27,20,4) for 20x4 LCD.
+ZMPT101B voltageSensor(A1, 50.0);
+
+float voltage1;
+double sensorValue1 = 0;
+double sensorValue2 = 0;
+int crosscount = 0;
+int climb_flag = 0;
+int val[100];
+int max_v = 0;
+double VmaxD = 0;
+double VeffD = 0;
+double Veff = 0;
+
+const int irPin = 2;
+volatile unsigned int counter = 0;
+unsigned long lastTime = 0;
+unsigned int rpm = 0;
+String SendData = "";
 
 
-const unsigned long UPDATE_INTERVAL = 1000;  // Update interval in milliseconds
+const int sensorIn = A2;
+int mVperAmp = 185;
 
-unsigned int pulseCount = 0;  // Number of pulses received
-unsigned long lastUpdateTime = 0;  // Last time the count was updated
-
-const int IR_PIN = 12;  // Pin connected to IR sensor
-const int relay=13;
-const int LM=A0;
-const int volt=A1;
-const int current=A2;
-const int voltout=1;
-const int currentout=3;
-const int speedout=4;
-const int LMOUT=0;
+double Voltage = 0;
+double VRMS = 0;
+double AmpsRMS = 0;
+bool mot = true;
+#define relaymotor 8
+#define vtglampov  13
+#define vtglampun 11
+#define currlamp 12
+#define templamp 9
+#define rpmlamp 10
+#define tripping 7
+int tripp = 0;
 
 void setup() {
-Serial.begin(115200);
-lcd.init();
-lcd.backlight();
+  Serial.begin(9600);
+  voltageSensor.setSensitivity(SENSITIVITY);
+  pinMode(irPin, INPUT);
+  lcd.init();
+  lcd.backlight();
+  attachInterrupt(digitalPinToInterrupt(irPin), countInterrupt, RISING);
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Motor Monitering");
+  lcd.setCursor(0, 1);
+  lcd.print(" System");
+  delay(1000);
+  pinMode(tripping, INPUT);
+  pinMode(relaymotor, OUTPUT);
+  pinMode(vtglampov, OUTPUT);
+  pinMode(vtglampun, OUTPUT);
+  pinMode(templamp, OUTPUT);
+  pinMode(rpmlamp, OUTPUT);
+  pinMode(currlamp, OUTPUT);
+  digitalWrite(relaymotor, HIGH);
 
- pinMode(IR_PIN, INPUT_PULLUP);  // Set IR pin as input with internal pull-up resistor
+  digitalWrite(vtglampov, HIGH);
+  digitalWrite(vtglampun, HIGH);
+  digitalWrite(templamp, HIGH);
+  digitalWrite(rpmlamp, HIGH);
+  digitalWrite(currlamp, HIGH);
 
-lcd.begin(16,2);
-lcd.setCursor(0,0);
-lcd.print("Motor Monitering");
-lcd.setCursor(0,1);
-lcd.print("System");
-delay(2000);
-lcd.print("Welcome");
-lcd.clear();
+  delay(2000);
+
+  digitalWrite(vtglampov, LOW);
+  digitalWrite(vtglampun, LOW);
+  digitalWrite(templamp, LOW);
+  digitalWrite(rpmlamp, LOW);
+  digitalWrite(currlamp, LOW);
+  delay(2000);
+
+  digitalWrite(vtglampov, HIGH);
+  digitalWrite(vtglampun, HIGH);
+  digitalWrite(templamp, HIGH);
+  digitalWrite(rpmlamp, HIGH);
+  digitalWrite(currlamp, HIGH);
+
+  lcd.clear();
+
+}
+
+
+double getTemp() {
+  // Thermistor code
+  int thermistor_adc_val; double output_voltage;
+  double thermistor_resistance, therm_res_ln, temperature;
+  thermistor_adc_val = analogRead(thermistor_output);
+  output_voltage = ((thermistor_adc_val * 5.0) / 1023.0);
+  thermistor_resistance = ((5 * (12.0 / output_voltage)) - 10);
+  thermistor_resistance = thermistor_resistance * 1000;
+  therm_res_ln = log(thermistor_resistance);
+  temperature = (1 / (0.001129148 + (0.000234125 * therm_res_ln) + (0.0000000876741 * therm_res_ln * therm_res_ln * therm_res_ln)));
+  temperature = temperature - 273.15; return temperature;
+}
+
+double getVolt() {
+  voltage1 = voltageSensor.getRmsVoltage();
+
+}
+
+
+double getAmp() {
+  Voltage = getVPP();
+  VRMS = (Voltage / 2.0) * 0.707;
+  AmpsRMS = (VRMS * 1000) / mVperAmp; return AmpsRMS;
 }
 
 void loop() {
-  
-  // For Temperature
-  float lmvalue=analogRead(LM);
-  int tempr=(lmvalue * 500)/1023;
-  
-  if (tempr > 50){
-    TempFun(tempr);
+  double temp = getTemp();
+  double volt = getVolt();
+  double amp = getAmp();
+  // AC Voltage sensor code
+
+
+  // Tachometer code
+  if (millis() - lastTime > 1000) {
+    rpm = (counter * 60) / 7;
+    counter = 0;
+    lastTime = millis();
+
   }
-  else {
-  digitalWrite(LMOUT,LOW);
-}
+  VmaxD = 0;
+
+
+  // ****************************************************************************************
+
+  if (mot) {
+
+    // relay temp the final
+
+    if (temp > 60)
+    {
+      digitalWrite(relaymotor, LOW);
+      mot = false;
+      digitalWrite(templamp, LOW);
+      delay(100);
+    }
+
+    else if (temp < 60 && temp > 40)
+    {
+      digitalWrite(templamp, LOW);
+      delay(100);
+    }
+    else
+    {
+      digitalWrite(templamp, HIGH);
+    }
+
+    // for rpm
+
+    if (rpm < 300)
+    {
+      digitalWrite(relaymotor, LOW);
+      mot = false;
+      digitalWrite(rpmlamp, LOW);
+      delay(100);
+
+    }
+
+    else
+    {
+      digitalWrite(rpmlamp, HIGH);
+    }
+
+
+    // for voltage digitalWrite(vtglampov, HIGH);  digitalWrite(vtglampun, HIGH);
+    if (voltage1 > 270)
+    {
+      digitalWrite(relaymotor, LOW);
+      digitalWrite(vtglampov, LOW);
+       mot = false;
+      delay(100);
+
+    }
+    else if (voltage1 < 270 && voltage1 > 220)
+    {
+      digitalWrite(vtglampov, HIGH);
+    }
+
+    else if (voltage1 < 190)
+    {
+      digitalWrite(relaymotor, LOW);
+      mot = false;
+      digitalWrite(vtglampun, LOW);
+    }
+    else if (voltage1 > 190 && voltage1 < 210)
+    {
+      digitalWrite(vtglampun, LOW);
+    }
+
+    else
+    {
+      digitalWrite(vtglampun, HIGH);
+      digitalWrite(vtglampov, HIGH);
+    }
 
 
 
-// for current
-  int avgcurrent=0;
-  for (int i=0; i<1000; i++){
-    avgcurrent = avgcurrent + (0.0264 * analogRead(current) - 13.51)/1000;
+    // relay for current
+    if (amp > 6)
+    {
+      digitalWrite(relaymotor, LOW);
+      mot = false;
+       digitalWrite(currlamp, LOW);
+    }
+    else if (amp >= 3 && amp < 5)
+    {
+      digitalWrite(currlamp, LOW);
+    }
+    else {
+      digitalWrite(currlamp, HIGH);
+    }
+
+
   }
-  
-  if (avgcurrent > 3){
-    CurrentFun(avgcurrent);
-  }
-else {
-digitalWrite (currentout,LOW);
-}
+  // ****************************************************************************************
 
-//for speed
-unsigned long currentTime = millis();  // Get current time
-  unsigned int currentPulseCount = 0;  // Number of pulses received during the update interval
+  else if (mot == false)
+  {
+    lcd.clear();
+    while (mot == false)
+    {
 
-  while (millis() - currentTime < UPDATE_INTERVAL) {
-    if (digitalRead(IR_PIN) == LOW) {
-      currentPulseCount++;  // Increment pulse count if a pulse is detected
-      while (digitalRead(IR_PIN) == LOW) {
-        // Wait until the pulse ends
-      }
+      tripp = digitalRead(tripping);
+      if (tripp == 1)
+        mot == true;
+      lcd.setCursor(0, 0);
+      lcd.print("Motor tripped");
     }
   }
 
-  float revolutionsPerSecond = currentPulseCount / float(UPDATE_INTERVAL) * 1000.0 / 2.0;  // Calculate revolutions per second (RPS)
-  float revolutionsPerMinute = revolutionsPerSecond * 60.0;  // Calculate revolutions per minute (RPM)
 
-  Serial.print("RPM: ");
-  Serial.println(revolutionsPerMinute);
-  int rpm = revolutionsPerMinute;
+  String tem = String(temp);
+  String vol = String(voltage1);
+  String cur = String(amp);
+  String spd = String(rpm);
 
-  
+  //disp param
+  lcd.setCursor(0, 0);
+  lcd.print("V:");
+  lcd.setCursor(2, 0);
+  lcd.print("    ");
+  lcd.setCursor(2, 0);
+  lcd.print(vol);
 
-//for voltage   
-float value = analogRead(volt);
-int voltage= ((value/204.8)*100)/5;
+  lcd.setCursor(8, 0);
+  lcd.print("I:");
+  lcd.setCursor(10, 0);
+  lcd.print("    ");
+  lcd.setCursor(10, 0);
+  lcd.print(cur);
 
-if (voltage>80){
-  VoltFun(voltage);
-}
-else{
-  digitalWrite(voltout,LOW);
-}
-// To Display all Parameters
+  lcd.setCursor(0, 1);
+  lcd.print("T:");
+  lcd.setCursor(2, 1);
+  lcd.print("    ");
+  lcd.setCursor(2, 1);
+  lcd.print(tem);
 
-  lcd.setCursor(0,0);
-   lcd.print("TMP=");
-  lcd.setCursor(5,0);
-  lcd.print(tempr);
-  
-  lcd.setCursor(9,0);
-  lcd.print("AMP=");
-  lcd.setCursor(13,0);
-  lcd.print(avgcurrent);
-  
-  lcd.setCursor(0,1);
-  lcd.print("RPM=");
-  lcd.setCursor(5,1);
-  lcd.print(rpm);
-  
-  lcd.setCursor(9,1);
-  lcd.print("VOLT="); 
-  lcd.setCursor(13,1);
-  lcd.print(voltage);
-
-voltage = 11;
-avgcurrent = 22;
-tempr = 33;
-rpm = 44; 
-
-   // Create a string with sensor values
-  String sensorData = "a" + String(voltage) + "," + "b" + String(avgcurrent) + "," + "c" + String(tempr) + "," + "d" + String(rpm);
-
-  // Send the sensor data to ESP32
-  Serial.println(sensorData);  // Use Serial1 for ESP32 communication
-  delay(2000);
+  lcd.setCursor(8, 1);
+  lcd.print("R:");
+  lcd.setCursor(10, 1);
+  lcd.print("    ");
+  lcd.setCursor(10, 1);
+  lcd.print(spd);
 
 
-} 
 
-void TempFun(float tempr){
-  //Serial.println(tempr);
-  if (tempr > 100){
-    digitalWrite(relay,HIGH);
-   
-  }
-  else {
-    digitalWrite(relay,LOW);
-    digitalWrite(LMOUT,HIGH);
-  }
- 
+
+
+  //SendData="{\"tem\":"+tem+",\"vol\":"+vol+",\"cur\":"+cur+",\"spd\":"+spd+"}";
+  //Serial.println(SendData);
+
+  String dataString = "a:" + String(voltage1, 2) + ",b:" + String(amp, 2) + ",c:" + String(rpm, 2) + ",d:" + String(temp, 2);
+
+  //String dataString = String(voltage1, 2) + "," + String(amp, 2) + "," + String(rpm, 2) + "," + String(temp, 2);
+  Serial.println(dataString);
+
+
+
+
+
+  //  Serial.println(voltage1);
+  //  Serial.println(amp);
+  //  Serial.println(rpm);
+  //  Serial.println(temp);
+  delay(1000);
+
+
+
 }
 
-void CurrentFun(float avgcurrent){
-  //Serial.println(avgcurrent);
-  if (avgcurrent > 5){
-    digitalWrite(relay,HIGH);
-    
-  }
-  else {
-    digitalWrite(relay,LOW);
-    digitalWrite (currentout,HIGH);
-  }
+void countInterrupt() {
+  counter++;
 }
 
-void VoltFun(float voltage){
-  if (voltage > 100){
-    digitalWrite(relay,HIGH);
-  }
-  else{
-    digitalWrite(relay,LOW);
-    digitalWrite(voltout,HIGH);
-  }
-}
+float getVPP() {
+  float result;
+  int readValue;
+  int maxValue = 0;
+  int minValue = 1024;
 
-void SpeedFun(int rpm){
-  if(rpm > 1600){
-    digitalWrite(relay,HIGH);
+  uint32_t start_time = millis();
+  while ((millis() - start_time) < 1000) {
+    readValue = analogRead(sensorIn);
+    if (readValue > maxValue) {
+      maxValue = readValue;
+    }
+    if (readValue < minValue) {
+      minValue = readValue;
+    }
   }
-  else{
-    digitalWrite(speedout,HIGH);
-  }
+
+  result = ((maxValue - minValue) * 5.0) / 1024.0;
+  return result;
 }
