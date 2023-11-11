@@ -1,142 +1,326 @@
-#include <ESP8266HTTPClient.h>
-#include <ESP8266WiFi.h>
+#include <math.h>
+#include <LiquidCrystal_I2C.h>
+#include <ZMPT101B.h>
+#include <Wire.h>
+LiquidCrystal_I2C lcd(0x27, 16, 2);
+#define SENSITIVITY 500.0f
+const int thermistor_output = A0;
 
-#define WebNme "http://tr9v3tem.000webhostapp.com/uya6d7a8bdai6bd7abiydn7had/updater.php"
-#define CSIDN "IQ00 Z7 5G"
-#define CPASS "1122334455"
+ZMPT101B voltageSensor(A1, 50.0);
 
-byte RSC = 0;
+float voltage1;
+double sensorValue1 = 0;
+double sensorValue2 = 0;
+int crosscount = 0;
+int climb_flag = 0;
+int val[100];
+int max_v = 0;
+double VmaxD = 0;
+double VeffD = 0;
+double Veff = 0;
 
-String PostM(String a) {
-  WiFiClient client;
-  HTTPClient http;
-  
-  // Make HTTP POST request to the specified URL
-  http.begin(client, WebNme);
-  http.addHeader("Content-Type", "application/x-www-form-urlencoded");
-  
-  Serial.println(a);
-  
-  // Send the POST request with the provided data
-  RSC = http.POST(a);
-  
-  String payload = "undefined";
-  
-  if (RSC > 0) {
-    // If the request was successful, get the response payload
-    payload = http.getString();
-    Serial.println(payload);
-  }
-  
-  http.end();
-  return payload;
-}
+const int irPin = 2;
+volatile unsigned int counter = 0;
+unsigned long lastTime = 0;
+unsigned int rpm = 0;
+String SendData = "";
 
-void wifiConnect() {
-  Serial.println(CSIDN);
-  Serial.println(CPASS);
-  
-  // Connect to the specified Wi-Fi network
-  WiFi.begin(CSIDN, CPASS);
-  
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.println("Waiting for connection...");
-  }
-  
-  Serial.println("Connected...");
-  delay(3000);
-  
-  if (WiFi.status() == WL_CONNECTED) {
-    Serial.println("Wi-Fi Connected");
-  }
-}
+
+const int sensorIn = A2;
+int mVperAmp = 185;
+
+double Voltage = 0;
+double VRMS = 0;
+double AmpsRMS = 0;
+bool mot = true;
+#define relaymotor 8
+#define vtglampov  13
+#define vtglampun 11
+#define currlamp 12
+#define templamp 9
+#define rpmlamp 10
+#define tripping 7
+int tripp = 0;
 
 void setup() {
-  Serial.begin(115200);
-  
-  // Connect to Wi-Fi
-  wifiConnect();
-  
-  Serial.println(GetM("2133"));
-  
-  // put your setup code here, to run once:
+  Serial.begin(9600);
+  voltageSensor.setSensitivity(SENSITIVITY);
+  pinMode(irPin, INPUT);
+  lcd.init();
+  lcd.backlight();
+  attachInterrupt(digitalPinToInterrupt(irPin), countInterrupt, RISING);
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Motor Monitering");
+  lcd.setCursor(0, 1);
+  lcd.print(" System");
+  delay(1000);
+  pinMode(tripping, INPUT);
+  pinMode(relaymotor, OUTPUT);
+  pinMode(vtglampov, OUTPUT);
+  pinMode(vtglampun, OUTPUT);
+  pinMode(templamp, OUTPUT);
+  pinMode(rpmlamp, OUTPUT);
+  pinMode(currlamp, OUTPUT);
+  digitalWrite(relaymotor, HIGH);
+
+  digitalWrite(vtglampov, HIGH);
+  digitalWrite(vtglampun, HIGH);
+  digitalWrite(templamp, HIGH);
+  digitalWrite(rpmlamp, HIGH);
+  digitalWrite(currlamp, HIGH);
+
+  delay(2000);
+
+  digitalWrite(vtglampov, LOW);
+  digitalWrite(vtglampun, LOW);
+  digitalWrite(templamp, LOW);
+  digitalWrite(rpmlamp, LOW);
+  digitalWrite(currlamp, LOW);
+  delay(2000);
+
+  digitalWrite(vtglampov, HIGH);
+  digitalWrite(vtglampun, HIGH);
+  digitalWrite(templamp, HIGH);
+  digitalWrite(rpmlamp, HIGH);
+  digitalWrite(currlamp, HIGH);
+
+  lcd.clear();
+
 }
 
-String GetM(String a) {
-  WiFiClient client;
-  HTTPClient http;
-  
-  // Make HTTP GET request to the specified URL
-  http.begin(client, WebNme);
-  RSC = http.GET();
-  
-  String payload = "undefined";
-  
-  if (RSC > 0) {
-    // If the request was successful, get the response payload
-    payload = http.getString();
-  }
-  
-  http.end();
-  return payload;
+
+double getTemp() {
+  // Thermistor code
+  int thermistor_adc_val; double output_voltage;
+  double thermistor_resistance, therm_res_ln, temperature;
+  thermistor_adc_val = analogRead(thermistor_output);
+  output_voltage = ((thermistor_adc_val * 5.0) / 1023.0);
+  thermistor_resistance = ((5 * (12.0 / output_voltage)) - 10);
+  thermistor_resistance = thermistor_resistance * 1000;
+  therm_res_ln = log(thermistor_resistance);
+  temperature = (1 / (0.001129148 + (0.000234125 * therm_res_ln) + (0.0000000876741 * therm_res_ln * therm_res_ln * therm_res_ln)));
+  temperature = temperature - 273.15; return temperature;
 }
 
-int tempdata = 101;
-int currentdata = 202;
-int speeddata = 303;
-int voltagedata = 404;
+double getVolt() {
+  voltage1 = voltageSensor.getRmsVoltage();
 
-String senddata = "";
+}
 
-String receivedData;   // String to store received data
-String string1, string2, string3, string4;   // Strings to store parsed values
 
-// Initialize string variables
-String stringa;
-String stringb;
-String stringc;
-String stringd;
+double getAmp() {
+  Voltage = getVPP();
+  VRMS = (Voltage / 2.0) * 0.707;
+  AmpsRMS = (VRMS * 1000) / mVperAmp; return AmpsRMS;
+}
 
 void loop() {
-  delay(4000);
-  
-  if (Serial.available()) {
-    String receivedData = Serial.readStringUntil('\n');
-    Serial.println("Received data: " + receivedData);
-    
-    char charArray[receivedData.length() + 1];
-    receivedData.toCharArray(charArray, receivedData.length() + 1);
+  double temp = getTemp();
+  double volt = getVolt();
+  double amp = getAmp();
+  // AC Voltage sensor code
 
-    char *token = strtok(charArray, ",");
-    
-    while (token != NULL) {
-      String value = String(token);
 
-      if (value.startsWith("a")) {
-        stringa = value.substring(1);
-      } else if (value.startsWith("b")) {
-        stringb = value.substring(1);
-      } else if (value.startsWith("c")) {
-        stringc = value.substring(1);
-      } else if (value.startsWith("d")) {
-        stringd = value.substring(1);
-      }
+  // Tachometer code
+  if (millis() - lastTime > 1000) {
+    rpm = (counter * 60) / 7;
+    counter = 0;
+    lastTime = millis();
 
-      token = strtok(NULL, ",");
-    }
-    
-    Serial.println("String a: " + stringa);
-    Serial.println("String b: " + stringb);
-    Serial.println("String c: " + stringc);
-    Serial.println("String d: " + stringd);
   }
-   // stringa = temperature !! stringb = current !! stringc = speed !! stringd = voltage
-  Serial.println(PostM(senddata + "tem=" + stringa + "&cur=" + stringb + "&spd=" + stringc + "&vol=" + stringd + ""));
-  delay(2000); 
+  VmaxD = 0;
 
-  stringa = "0";
-  stringb = "0";
-  stringc = "0";
-  stringd = "0";  
+
+  // ****************************************************************************************
+
+  if (mot) {
+
+    // relay temp the final
+
+    if (temp > 60)
+    {
+      digitalWrite(relaymotor, LOW);
+      mot = false;
+      digitalWrite(templamp, LOW);
+      delay(100);
+    }
+
+    else if (temp < 60 && temp > 40)
+    {
+      digitalWrite(templamp, LOW);
+      delay(100);
+    }
+    else
+    {
+      digitalWrite(templamp, HIGH);
+    }
+
+    // for rpm
+
+    if (rpm < 300)
+    {
+      digitalWrite(relaymotor, LOW);
+      mot = false;
+      digitalWrite(rpmlamp, LOW);
+      delay(100);
+
+    }
+
+    else
+    {
+      digitalWrite(rpmlamp, HIGH);
+    }
+
+
+    // for voltage digitalWrite(vtglampov, HIGH);  digitalWrite(vtglampun, HIGH);
+    if (voltage1 > 270)
+    {
+      digitalWrite(relaymotor, LOW);
+      digitalWrite(vtglampov, LOW);
+       mot = false;
+      delay(100);
+
+    }
+    else if (voltage1 < 270 && voltage1 > 220)
+    {
+      digitalWrite(vtglampov, HIGH);
+    }
+
+    else if (voltage1 < 190)
+    {
+      digitalWrite(relaymotor, LOW);
+      mot = false;
+      digitalWrite(vtglampun, LOW);
+    }
+    else if (voltage1 > 190 && voltage1 < 210)
+    {
+      digitalWrite(vtglampun, LOW);
+    }
+
+    else
+    {
+      digitalWrite(vtglampun, HIGH);
+      digitalWrite(vtglampov, HIGH);
+    }
+
+
+
+    // relay for current
+    if (amp > 6)
+    {
+      digitalWrite(relaymotor, LOW);
+      mot = false;
+       digitalWrite(currlamp, LOW);
+    }
+    else if (amp >= 3 && amp < 5)
+    {
+      digitalWrite(currlamp, LOW);
+    }
+    else {
+      digitalWrite(currlamp, HIGH);
+    }
+
+
+  }
+  // ****************************************************************************************
+
+  else if (mot == false)
+  {
+    lcd.clear();
+    while (mot == false)
+    {
+
+      tripp = digitalRead(tripping);
+      if (tripp == 1)
+        mot == true;
+      lcd.setCursor(0, 0);
+      lcd.print("Motor tripped");
+    }
+  }
+
+
+  String tem = String(temp);
+  String vol = String(voltage1);
+  String cur = String(amp);
+  String spd = String(rpm);
+
+  //disp param
+  lcd.setCursor(0, 0);
+  lcd.print("V:");
+  lcd.setCursor(2, 0);
+  lcd.print("    ");
+  lcd.setCursor(2, 0);
+  lcd.print(vol);
+
+  lcd.setCursor(8, 0);
+  lcd.print("I:");
+  lcd.setCursor(10, 0);
+  lcd.print("    ");
+  lcd.setCursor(10, 0);
+  lcd.print(cur);
+
+  lcd.setCursor(0, 1);
+  lcd.print("T:");
+  lcd.setCursor(2, 1);
+  lcd.print("    ");
+  lcd.setCursor(2, 1);
+  lcd.print(tem);
+
+  lcd.setCursor(8, 1);
+  lcd.print("R:");
+  lcd.setCursor(10, 1);
+  lcd.print("    ");
+  lcd.setCursor(10, 1);
+  lcd.print(spd);
+
+
+
+
+
+  //SendData="{\"tem\":"+tem+",\"vol\":"+vol+",\"cur\":"+cur+",\"spd\":"+spd+"}";
+  //Serial.println(SendData);
+
+  String dataString = "a:" + String(voltage1, 2) + ",b:" + String(amp, 2) + ",c:" + String(rpm, 2) + ",d:" + String(temp, 2);
+
+  //String dataString = String(voltage1, 2) + "," + String(amp, 2) + "," + String(rpm, 2) + "," + String(temp, 2);
+  Serial.println(dataString);
+
+
+
+
+
+  //  Serial.println(voltage1);
+  //  Serial.println(amp);
+  //  Serial.println(rpm);
+  //  Serial.println(temp);
+  delay(1000);
+
+
+
+}
+
+void countInterrupt() {
+  counter++;
+}
+
+float getVPP() {
+  float result;
+  int readValue;
+  int maxValue = 0;
+  int minValue = 1024;
+
+  uint32_t start_time = millis();
+  while ((millis() - start_time) < 1000) {
+    readValue = analogRead(sensorIn);
+    if (readValue > maxValue) {
+      maxValue = readValue;
+    }
+    if (readValue < minValue) {
+      minValue = readValue;
+    }
+  }
+
+  result = ((maxValue - minValue) * 5.0) / 1024.0;
+  return result;
 }
